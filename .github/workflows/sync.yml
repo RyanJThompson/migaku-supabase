@@ -1,0 +1,75 @@
+name: Sync Migaku to Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_refresh:
+        description: "Run a full Migaku refresh"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      status:
+        description: "Comma-separated Migaku statuses, or ALL"
+        required: true
+        default: "KNOWN,LEARNING"
+  schedule:
+    # Daily at 06:00 UTC. GitHub schedules are UTC and can drift by a few minutes.
+    - cron: "0 6 * * *"
+
+concurrency:
+  group: migaku-supabase-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      MIGAKU_EMAIL: ${{ secrets.MIGAKU_EMAIL }}
+      MIGAKU_REFRESH_TOKEN: ${{ secrets.MIGAKU_REFRESH_TOKEN }}
+      MIGAKU_DEVICE_ID: ${{ secrets.MIGAKU_DEVICE_ID }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_TABLE: ${{ vars.SUPABASE_TABLE || 'migaku_words' }}
+      SYNC_LANG: ${{ vars.SYNC_LANG || 'zh' }}
+      SYNC_STATUS: ${{ github.event.inputs.status || vars.SYNC_STATUS || 'KNOWN,LEARNING' }}
+      SYNC_DIFFICULT_LIMIT: ${{ vars.SYNC_DIFFICULT_LIMIT || '2000' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Validate required secrets
+        run: |
+          missing=0
+          for name in MIGAKU_EMAIL MIGAKU_REFRESH_TOKEN MIGAKU_DEVICE_ID SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Check connectivity
+        run: migaku-supabase status --lang "$SYNC_LANG"
+
+      - name: Sync Migaku to Supabase
+        run: |
+          args=(sync --status "$SYNC_STATUS")
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.full_refresh || 'true' }}" = "true" ]; then
+            args+=(--full-refresh)
+          fi
+          migaku-supabase "${args[@]}"

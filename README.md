@@ -224,6 +224,55 @@ python -m migaku_supabase sync --archive-stale
 
 Use `--archive-stale` carefully. It sets `archived=true` for cached rows that no longer appear in Migaku for the selected language/status filter.
 
+## Automatic Sync With GitHub Actions
+
+The repository includes a scheduled GitHub Actions workflow at [`.github/workflows/sync.yml`](./.github/workflows/sync.yml).
+
+It runs daily at `06:00 UTC` and can also be started manually from the GitHub **Actions** tab.
+
+Why GitHub Actions instead of Supabase Cron:
+
+- Supabase Cron can run SQL or invoke Edge Functions.
+- This sync is a Python CLI.
+- Running it in GitHub Actions avoids porting the Migaku sync logic to a Supabase Edge Function.
+- The workflow still connects directly to your Supabase table using `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+
+Set these repository secrets in GitHub:
+
+1. Open your GitHub repository.
+2. Go to **Settings** -> **Secrets and variables** -> **Actions**.
+3. Add these **Repository secrets**:
+
+| Secret | Where to find it |
+| --- | --- |
+| `MIGAKU_EMAIL` | Your Migaku login email |
+| `MIGAKU_REFRESH_TOKEN` | From your local `.env` after running `python -m migaku_supabase setup` |
+| `MIGAKU_DEVICE_ID` | From your local `.env` |
+| `SUPABASE_URL` | Supabase **Project Settings** -> **API** -> **Project URL** |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase **Project Settings** -> **API** -> **service_role** key |
+
+Optional repository variables:
+
+| Variable | Default |
+| --- | --- |
+| `SUPABASE_TABLE` | `migaku_words` |
+| `SYNC_LANG` | `zh` |
+| `SYNC_STATUS` | `KNOWN,LEARNING` |
+| `SYNC_DIFFICULT_LIMIT` | `2000` |
+
+Manual run:
+
+1. Open the repository on GitHub.
+2. Go to **Actions**.
+3. Select **Sync Migaku to Supabase**.
+4. Click **Run workflow**.
+
+The scheduled run uses `--full-refresh` so the destination table can repair itself if rows were deleted or the GitHub runner starts from a fresh cache.
+
+### Supabase Cron Alternative
+
+Supabase supports Cron through Postgres `pg_cron`, and scheduled jobs can run SQL or use `pg_net` to invoke Supabase Edge Functions. That is useful if the sync is implemented as an Edge Function. This project currently keeps the sync as Python, so GitHub Actions is the simpler hosted cron.
+
 ## Export
 
 ```bash
