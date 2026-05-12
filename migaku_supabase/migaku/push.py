@@ -1,7 +1,7 @@
 """Write side: POST core-server.migaku.com/push/enqueue.
 
 The new capability v2 adds vs v1: writing card / word state changes back
-to Migaku. The v1 sync was strictly Migaku → Notion; v2 will eventually
+to Migaku. The current sync is strictly Migaku -> Supabase; this module will eventually
 support both directions, and the same /push/enqueue endpoint is used for:
 
   - Setting word status (knownStatus / tracked).

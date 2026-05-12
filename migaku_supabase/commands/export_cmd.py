@@ -1,8 +1,4 @@
-"""`migaku-notion export` — write state.db rows to CSV / XLSX. Pure local.
-
-Ported verbatim from v1's `run_export`. The `--with-meaning` path is the
-only one that touches Notion, and it's optional.
-"""
+"""`migaku-supabase export` — write state.db rows to CSV / XLSX."""
 from __future__ import annotations
 
 import argparse
@@ -13,14 +9,14 @@ from .. import config
 from ..export import (
     export_csv,
     export_xlsx,
-    fetch_meanings_from_notion,
+    fetch_meanings_from_supabase,
     filter_rows,
 )
-from ..notion_client import NotionClient
+from ..supabase_client import SupabaseClient
 from ..state import StateCache
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -29,8 +25,8 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     if not config.STATE_DB_PATH.exists():
-        log.error("Local cache (%s) not initialised. Run `python -m migaku_notion sync` "
-                  "or `python -m migaku_notion rebuild-cache` first.",
+        log.error("Local cache (%s) not initialised. Run `python -m migaku_supabase sync` "
+                  "or `python -m migaku_supabase rebuild-cache` first.",
                   config.STATE_DB_PATH.name)
         return 1
 
@@ -47,13 +43,13 @@ def run(args: argparse.Namespace) -> int:
 
     meanings: dict[str, str] | None = None
     if args.with_meaning:
-        notion_token = config.notion_token()
-        notion_db = config.notion_database_id()
-        if not (notion_token and notion_db):
-            log.error("--with-meaning requires NOTION_TOKEN and NOTION_DATABASE_ID in .env")
+        supabase_url = config.supabase_url()
+        supabase_key = config.supabase_key()
+        if not (supabase_url and supabase_key):
+            log.error("--with-meaning requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env")
             return 2
-        notion = NotionClient(notion_token, notion_db)
-        meanings = fetch_meanings_from_notion(notion)
+        supabase = SupabaseClient(supabase_url, supabase_key, config.supabase_table())
+        meanings = fetch_meanings_from_supabase(supabase)
 
     if args.csv:
         export_csv(Path(args.csv), rows, meanings)

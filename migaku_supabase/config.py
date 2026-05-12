@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -38,10 +38,10 @@ STATE_DB_PATH = PROJECT_ROOT / "state.db"
 # Where Migaku's published dictionary + frequency .db files get cached.
 # Lives under the user's home so multiple v2 checkouts share one copy
 # (the files are tens of MB and identical regardless of working
-# directory). Override with $MIGAKU_NOTION_DICTS_DIR for testing.
+# directory). Override with $MIGAKU_SUPABASE_DICTS_DIR for testing.
 DICTS_DIR = Path(
-    os.getenv("MIGAKU_NOTION_DICTS_DIR")
-    or (Path.home() / ".migaku-notion-v2" / "dicts")
+    os.getenv("MIGAKU_SUPABASE_DICTS_DIR")
+    or (Path.home() / ".migaku-supabase" / "dicts")
 )
 
 
@@ -50,12 +50,20 @@ DEFAULT_STATUS = os.getenv("SYNC_STATUS", "KNOWN,LEARNING")
 DEFAULT_DIFFICULT_LIMIT = int(os.getenv("SYNC_DIFFICULT_LIMIT", "2000"))
 
 
-def notion_token() -> str | None:
-    return os.getenv("NOTION_TOKEN")
+def supabase_url() -> str | None:
+    return os.getenv("SUPABASE_URL")
 
 
-def notion_database_id() -> str | None:
-    return os.getenv("NOTION_DATABASE_ID")
+def supabase_key() -> str | None:
+    return os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+
+
+def supabase_table() -> str:
+    return os.getenv("SUPABASE_TABLE", "migaku_words")
+
+
+def supabase_db_url() -> str | None:
+    return os.getenv("SUPABASE_DB_URL")
 
 
 def migaku_email() -> str | None:
@@ -70,7 +78,7 @@ def migaku_id_token() -> str | None:
     """A previously-derived Firebase ID token (optional, short-lived).
 
     Mostly used for tests/scripts; the normal flow re-derives from the
-    refresh token on each run via `migaku_notion.migaku.auth`.
+    refresh token on each run via `migaku_supabase.migaku.auth`.
     """
     return os.getenv("MIGAKU_ID_TOKEN")
 
@@ -109,7 +117,7 @@ def _write_env_file(values: dict[str, str]) -> None:
 
     Updated keys overwrite their corresponding lines; existing comments and
     structure stay intact. New keys not in the template are appended in a
-    "Added by migaku-notion" block at the bottom.
+    "Added by migaku-supabase" block at the bottom.
     """
     if ENV_EXAMPLE_PATH.exists():
         lines = ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines()
@@ -131,7 +139,7 @@ def _write_env_file(values: dict[str, str]) -> None:
     extra = [k for k in values if k not in seen]
     if extra:
         out_lines.append("")
-        out_lines.append("# Added by migaku-notion")
+        out_lines.append("# Added by migaku-supabase")
         for k in extra:
             out_lines.append(f"{k}={values[k]}")
 

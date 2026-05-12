@@ -1,10 +1,4 @@
-"""CSV / XLSX export of `state.db`. No Migaku API needed.
-
-Ported from v1's `sync.py` so anyone who already has a populated cache can
-keep using the same export pipeline. The optional `--with-meaning` flag
-hits Notion (via NotionClient.query_all_pages) to splice in the Meaning
-column, which lives only in Notion (not in state.db).
-"""
+"""CSV / XLSX export of `state.db`. No Migaku API needed."""
 from __future__ import annotations
 
 import logging
@@ -12,15 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from .models import CachedRow
-from .notion_client import NotionClient, prop_text
+from .supabase_client import SupabaseClient
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 # Canonical column order. (Display name, CachedRow attribute name).
-# Mirrors notion_client.NOTION_DB_PROPERTIES order — keep in sync when
-# either side changes. v2 additions: Frequency, Example.
+# Mirrors the Supabase table's human-facing columns.
 EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("Word",             "dict_form"),
     ("Pinyin",           "pinyin_marks"),
@@ -42,31 +35,30 @@ EXPORT_COLUMNS: list[tuple[str, str]] = [
 
 def _row_value(row: CachedRow, attr: str, meanings: dict[str, str] | None) -> Any:
     if attr == "_meaning":
-        # Prefer the Notion-side meaning if --with-meaning fetched it
-        # (it's the source of truth for user-edited / Notion-AI rows).
+        # Prefer the Supabase-side meaning if --with-meaning fetched it
+        # because users may edit that column directly.
         # Fall back to the cache's `meaning` field, which v2 populates
         # from Migaku's published dict whenever there's a hit.
-        notion_meaning = (meanings or {}).get(row.migaku_key)
-        if notion_meaning:
-            return notion_meaning
+        sink_meaning = (meanings or {}).get(row.migaku_key)
+        if sink_meaning:
+            return sink_meaning
         return row.meaning or ""
     return getattr(row, attr, "")
 
 
-def fetch_meanings_from_notion(notion: NotionClient) -> dict[str, str]:
-    """One full Notion query just for the Meaning column, keyed by Migaku key."""
-    log.info("Fetching Meaning column from Notion ...")
-    pages = notion.query_all_pages()
+def fetch_meanings_from_supabase(supabase: SupabaseClient) -> dict[str, str]:
+    """One full Supabase query just for the Meaning column, keyed by Migaku key."""
+    log.info("Fetching Meaning column from Supabase ...")
+    records = supabase.query_all_rows()
     out: dict[str, str] = {}
-    for page in pages:
-        props = page.get("properties", {}) or {}
-        key = prop_text(props.get("Migaku key"))
+    for record in records:
+        key = record.get("migaku_key") or ""
         if not key:
             continue
-        meaning = prop_text(props.get("Meaning"))
+        meaning = record.get("meaning") or ""
         if meaning:
             out[key] = meaning
-    log.info("Got %d meanings (out of %d Notion rows)", len(out), len(pages))
+    log.info("Got %d meanings (out of %d Supabase rows)", len(out), len(records))
     return out
 
 

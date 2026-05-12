@@ -91,7 +91,7 @@ import requests
 from .. import config
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 CATALOG_URL = "https://migaku-public-data.migaku.com/dicts/index2.json"

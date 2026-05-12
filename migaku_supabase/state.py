@@ -12,12 +12,12 @@ v2 additions (forward-compatible — v1 tools will just ignore them):
     validation), `last_full_pull_at` (ISO timestamp of the most recent
     serverVersion=0 sweep), and `v2_first_sync_done` ("1"/"0"; gates
     the one-time auto-populate of blank Meanings).
-  - `meaning`, `example`, `frequency_stars`, `notion_meaning_was_blank`
+  - `meaning`, `example`, `frequency_stars`, `sink_meaning_was_blank`
     columns on `words` (added via idempotent ALTER TABLE; v1 tools will
     keep working since they just SELECT * over the columns they know
     about).
 
-Atomicity rule (carried from v1): every Notion API call is paired with a
+Atomicity rule: every destination API call is paired with a
 single `cache.upsert(row)` inside its own transaction. A SIGKILL between
 the two would lose at most one row's worth of state, recoverable by
 `rebuild-cache`.
@@ -100,13 +100,13 @@ class StateCache:
         if "frequency_stars" not in cols:
             with self.conn:
                 self.conn.execute("ALTER TABLE words ADD COLUMN frequency_stars INTEGER")
-        if "notion_meaning_was_blank" not in cols:
+        if "sink_meaning_was_blank" not in cols:
             with self.conn:
                 self.conn.execute(
-                    "ALTER TABLE words ADD COLUMN notion_meaning_was_blank "
+                    "ALTER TABLE words ADD COLUMN sink_meaning_was_blank "
                     "INTEGER NOT NULL DEFAULT 1"
                 )
-
+            cols.add("sink_meaning_was_blank")
     def close(self) -> None:
         self.conn.close()
 
@@ -142,9 +142,9 @@ class StateCache:
                 meaning=r["meaning"] if "meaning" in keys else None,
                 example=r["example"] if "example" in keys else None,
                 frequency_stars=(r["frequency_stars"] if "frequency_stars" in keys else None),
-                notion_meaning_was_blank=(
-                    bool(r["notion_meaning_was_blank"])
-                    if "notion_meaning_was_blank" in keys else True
+                sink_meaning_was_blank=(
+                    bool(r["sink_meaning_was_blank"])
+                    if "sink_meaning_was_blank" in keys else True
                 ),
             )
         return out
@@ -158,7 +158,7 @@ class StateCache:
                                    part_of_speech, last_synced, archived,
                                    pinyin_marks, pinyin_numeric, sense_index,
                                    meaning, example, frequency_stars,
-                                   notion_meaning_was_blank)
+                                   sink_meaning_was_blank)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(migaku_key) DO UPDATE SET
                     page_id                  = excluded.page_id,
@@ -178,14 +178,14 @@ class StateCache:
                     meaning                  = excluded.meaning,
                     example                  = excluded.example,
                     frequency_stars          = excluded.frequency_stars,
-                    notion_meaning_was_blank = excluded.notion_meaning_was_blank
+                    sink_meaning_was_blank   = excluded.sink_meaning_was_blank
                 """,
                 (row.migaku_key, row.page_id, row.lang, row.dict_form, row.secondary,
                  row.known_status, row.fail_rate, row.total_reviews, row.failed_reviews,
                  row.part_of_speech, row.last_synced, 1 if row.archived else 0,
                  row.pinyin_marks, row.pinyin_numeric, row.sense_index,
                  row.meaning, row.example, row.frequency_stars,
-                 1 if row.notion_meaning_was_blank else 0),
+                 1 if row.sink_meaning_was_blank else 0),
             )
 
     def mark_archived(self, key: str, archived: bool, last_synced: str | None) -> None:
@@ -256,11 +256,10 @@ class StateCache:
     def is_v2_first_sync_done(self) -> bool:
         """True if a v2 sync has completed against this cache.
 
-        Gates the one-time auto-population of blank Meanings (Greg,
-        2026-05-07): on the first v2 sync, dict-derived Meanings get
-        written into Notion rows whose Meaning is currently blank. From
-        the second sync onward, Meaning is left alone (matches v1's
-        "never overwrite Meaning" rule).
+        Gates the one-time auto-population of blank Meanings. On the
+        first v2 sync, dict-derived Meanings get written into Supabase
+        rows whose Meaning is currently blank. From the second sync
+        onward, Meaning is left alone.
         """
         return self.get_meta(self.META_V2_FIRST_SYNC_DONE) == "1"
 
@@ -283,8 +282,8 @@ def _approx_eq(a: float | None, b: float | None) -> bool:
 def has_tracked_changes(word: Any, cached: CachedRow) -> bool:
     """Return True if any tracked field on `word` differs from `cached`.
 
-    Tracked fields (must match the columns Notion's `update_page` writes,
-    so the sync can skip a Notion call when nothing of consequence has
+    Tracked fields (must match the columns the destination sync writes,
+    so the sync can skip a destination call when nothing of consequence has
     changed):
 
       v1 set:
@@ -293,7 +292,7 @@ def has_tracked_changes(word: Any, cached: CachedRow) -> bool:
       v2 additions:
         meaning, example, frequency_stars
 
-    `Meaning` is special — see `is_v2_first_sync_done` and the sync
+    `Meaning` is special: see `is_v2_first_sync_done` and the sync
     flow notes. We DO compare it here, but the sync flow is responsible
     for only INCLUDING it in the update payload when the first-sync
     auto-populate is allowed. After that, has_tracked_changes still

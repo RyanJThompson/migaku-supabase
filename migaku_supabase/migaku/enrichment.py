@@ -2,7 +2,7 @@
 
 Sits between `migaku.pull.list_words()` (which returns Words with only
 the fields Migaku itself stores: dict_form, secondary, status, language,
-partOfSpeech) and the Notion write step (which wants pinyin, meaning,
+partOfSpeech) and the Supabase write step (which wants pinyin, meaning,
 example sentence, frequency stars).
 
 Design (Greg, 2026-05-07):
@@ -20,11 +20,11 @@ Design (Greg, 2026-05-07):
   - **Meaning special case** — see `migaku.commands.sync_cmd` for the
     "first v2 sync only populates blanks" guard. The enricher always
     fills `word.meaning` if the dict has it; the *sync* code decides
-    whether to actually include it in the Notion update payload.
+    whether to actually include it in the destination update payload.
 
 Usage (once everything else is wired):
 
-    from migaku_notion.migaku import enrichment, dict as dict_mod, frequency
+    from migaku_supabase.migaku import enrichment, dict as dict_mod, frequency
     enricher = enrichment.WordEnricher(
         dictionary=dict_mod.MigakuDict("zh_CN", target_lang="en"),
         frequency=frequency.MigakuFrequency("zh_CN"),
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from .frequency import MigakuFrequency
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 class WordEnricher:
@@ -96,7 +96,7 @@ class WordEnricher:
                 word.example = entry.examples[0]
             if entry.parts_of_speech and not word.part_of_speech:
                 # Comma-join here so the Word's str-typed
-                # part_of_speech field stays valid; build_properties
+                # part_of_speech field stays valid; build_record
                 # will normalise it again on the way out.
                 word.part_of_speech = ", ".join(sorted(set(entry.parts_of_speech)))
             stars = entry.frequency_stars
@@ -123,7 +123,7 @@ class WordEnricher:
                     except NotImplementedError:
                         pass
 
-        # Always populate numeric pinyin too for zh (Notion has a
+        # Always populate numeric pinyin too for zh (the destination has a
         # dedicated column). If the dict gave us tone-marks but not
         # numeric, derive numeric via pypinyin from the dict-supplied
         # marks string isn't trivial, so we fall back to deriving

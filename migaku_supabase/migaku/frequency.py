@@ -57,7 +57,7 @@ from .. import config
 from . import dict as _dict_mod  # for catalog access; named to avoid clash
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 class MigakuFrequency:

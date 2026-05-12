@@ -1,9 +1,4 @@
-"""argparse dispatcher. Mirrors v1's CLI surface 1:1.
-
-Subcommands: sync, rebuild-cache, login, status, chars, setup, export.
-Same flag names, same defaults — so anyone who scripted around v1's CLI
-can drop v2 in unchanged.
-"""
+"""argparse dispatcher for the Migaku -> Supabase CLI."""
 from __future__ import annotations
 
 import argparse
@@ -30,6 +25,7 @@ def _force_utf8_stdout() -> None:
 from .commands import (
     chars_cmd,
     export_cmd,
+    init_db_cmd,
     login_cmd,
     rebuild_cache_cmd,
     setup_cmd,
@@ -40,11 +36,10 @@ from .commands import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="migaku-notion",
+        prog="migaku-supabase",
         description=(
-            "Mirror your Migaku vocabulary into a Notion database (v2: direct "
-            "Migaku API, no Docker / Go middleman). Same Notion schema and "
-            "same `state.db` cache as v1; drop-in replacement."
+            "Mirror your Migaku vocabulary into a Supabase table "
+            "(direct Migaku API, no Docker / Go middleman)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -53,8 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sync = sub.add_parser(
         "sync",
-        help="Sync Migaku words into Notion. Diffs against state.db so re-runs "
-             "only PATCH rows whose tracked fields actually changed.",
+        help="Sync Migaku words into Supabase. Diffs against state.db so re-runs "
+             "only write rows whose tracked fields actually changed.",
     )
     p_sync.add_argument("--lang", default=config.DEFAULT_LANG,
                         help=f"Migaku language code (default: {config.DEFAULT_LANG})")
@@ -64,39 +59,45 @@ def build_parser() -> argparse.ArgumentParser:
                              "empty to include everything. "
                              f"Default: {config.DEFAULT_STATUS}")
     p_sync.add_argument("--dry-run", action="store_true",
-                        help="Don't write to Notion or state.db; just log what would happen.")
+                        help="Don't write to Supabase or state.db; just log what would happen.")
     p_sync.add_argument("--archive-stale", action="store_true",
-                        help="Archive Notion rows that no longer exist in Migaku "
+                        help="Mark Supabase rows archived when they no longer exist in Migaku "
                              "for this lang+status filter")
     p_sync.add_argument("--full-refresh", action="store_true",
                         help="Pull /pull-sync with serverVersion=0 (the whole "
                              "dataset) instead of resuming from the last "
                              "server_version persisted in state.db. Useful for "
                              "daily divergence checks; combined with the diff "
-                             "cache, Notion API calls stay minimal because "
+                             "cache, Supabase API calls stay minimal because "
                              "only rows whose tracked fields actually changed "
-                             "get PATCHed.")
+                             "get upserted.")
     p_sync.add_argument("--no-dict-meanings", action="store_true",
-                        help="Do NOT auto-populate the Notion `Meaning` column "
+                        help="Do NOT auto-populate the Supabase `meaning` column "
                              "from Migaku's published dictionary, even on the "
-                             "first v2 sync. Use this if you want v2 to behave "
-                             "exactly like v1 (Meaning always stays blank "
-                             "until you fill it yourself / via Notion AI). "
+                             "first sync. Use this if Meaning should stay blank "
+                             "until you fill it yourself. "
                              "Has no effect once the first-sync window has "
                              "already passed (state.db meta v2_first_sync_done=1).")
-    p_sync.add_argument("--no-notion", action="store_true",
-                        help="Disable Notion for this run and sync to local "
-                             "state.db only. Useful when building alternative "
-                             "integration sinks (Sheets/Airtable/custom).")
+    p_sync.add_argument("--no-supabase", action="store_true",
+                        help="Disable Supabase for this run and sync to local "
+                             "state.db only.")
     p_sync.set_defaults(func=sync_cmd.run)
 
     p_rebuild = sub.add_parser(
         "rebuild-cache",
-        help="Delete state.db and rebuild it from a fresh Notion query. "
-             "Read-only — no Notion writes. Use after manual edits in the "
-             "Notion UI or if state.db gets corrupted.",
+        help="Delete state.db and rebuild it from a fresh Supabase query. "
+             "Read-only — no Supabase writes. Use after manual edits in "
+             "Supabase or if state.db gets corrupted.",
     )
     p_rebuild.set_defaults(func=rebuild_cache_cmd.run)
+
+    p_init = sub.add_parser(
+        "init-db",
+        help="Apply the Supabase table schema using a direct Postgres connection URL.",
+    )
+    p_init.add_argument("--db-url", help="Supabase Postgres connection URL. "
+                                        "Defaults to SUPABASE_DB_URL.")
+    p_init.set_defaults(func=init_db_cmd.run)
 
     p_login = sub.add_parser(
         "login",
@@ -126,20 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup = sub.add_parser(
         "setup",
         help="Interactive first-run wizard. Walks through Migaku login, "
-             "Notion integration setup, parent page selection, auto-creates "
-             "the Migaku Vocab database with the right schema, and writes "
+             "Supabase setup, optional table schema creation, and writes "
              "everything to .env.",
     )
     p_setup.add_argument("--force", action="store_true",
                          help="Re-prompt for every value, even ones already in .env. "
-                              "Also creates a NEW Notion database, even if "
-                              "NOTION_DATABASE_ID is already set.")
+                              "Also rechecks Supabase settings.")
     p_setup.set_defaults(func=setup_cmd.run)
 
     p_export = sub.add_parser(
         "export",
         help="Export the local cache to CSV or XLSX. Reads from state.db "
-             "(no Notion API calls unless --with-meaning is set).",
+             "(no Supabase API calls unless --with-meaning is set).",
     )
     p_export.add_argument("--csv", metavar="PATH",
                           help="Write a CSV file at PATH (UTF-8 with BOM, Excel-compatible).")
@@ -152,10 +151,10 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Comma-separated statuses to include, or ALL. "
                                f"Default: {config.DEFAULT_STATUS}")
     p_export.add_argument("--include-archived", action="store_true",
-                          help="Also include rows that have been archived in Notion.")
+                          help="Also include rows that have been archived in Supabase.")
     p_export.add_argument("--with-meaning", action="store_true",
-                          help="Also pull the Meaning column from Notion (one extra "
-                               "API query, ~5 sec for 1500 rows). Without this flag, "
+                          help="Also pull the meaning column from Supabase (one extra "
+                               "API query). Without this flag, "
                                "the Meaning column in exports will be blank.")
     p_export.set_defaults(func=export_cmd.run)
 

@@ -40,7 +40,7 @@ exposes both modes:
 
   * Full refresh — pass `server_version=0`. Migaku returns the *whole*
     word list (and every other array) as if you were a fresh device.
-    Slow first-sync, but combined with v2's diff cache the Notion side
+    Slow first-sync, but combined with the diff cache the Supabase side
     only PATCHes rows whose tracked fields actually changed, so the
     follow-on cost is minimal. Use this for periodic divergence checks
     against the local cache (Greg's `--full-refresh` flag).
@@ -56,7 +56,7 @@ from ..models import MigakuEntity, Word
 from . import auth, const
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 # Either a stateful AuthSession or a one-shot AuthToken — pull_sync handles both.
@@ -288,7 +288,7 @@ def compute_difficulty(
     course. Keying on it would splinter polysemous words like 行 into
     multiple aggregation buckets (`("行", "0", "v")` vs `("行", "0",
     "n")` vs `("行", "0", "v,n")` depending on how the list was
-    serialised), which is not what we want in Notion. Notion shows
+    serialised), which is not what we want in the destination table. The UI shows
     ONE fail rate per word, so we aggregate to one bucket per
     (dictForm, secondary) and surface the union of POS values as a
     `parts_of_speech: list[str]` attribute on the row.
@@ -414,8 +414,8 @@ def compute_difficulty(
         first one to win the SQL JOIN); v2 returns
         `parts_of_speech: list[str]` (the union). The downstream
         merger in v2's `sync` should comma-join this list into the
-        existing Notion `Part of speech` column — see
-        notion_client.build_properties() which already handles list
+        existing `part_of_speech` column — see
+        supabase_client.build_record() which already handles list
         input defensively.
       - Edge case: a card relating to multiple words (each review
         counted against each word — matches the SQL JOIN semantics

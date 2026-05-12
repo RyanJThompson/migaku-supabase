@@ -1,6 +1,7 @@
 requests>=2.32,<3
 python-dotenv>=1.0,<2
 pypinyin>=0.50,<1
+psycopg[binary]>=3.2,<4
 
-# For `python -m migaku_notion export --xlsx`. CSV uses stdlib only.
+# For `python -m migaku_supabase export --xlsx`. CSV uses stdlib only.
 openpyxl>=3.1,<4

@@ -1,8 +1,8 @@
-"""`migaku-notion status` — connectivity + cache health check.
+"""`migaku-supabase status` — connectivity + cache health check.
 
 Exits non-zero only when core sync prerequisites fail (Migaku reachability).
-Notion is optional; if not configured we report "disabled" but keep a healthy
-status for local-only workflows and future non-Notion integrations.
+Supabase is optional; if not configured we report "disabled" but keep a healthy
+status for local-only workflows.
 """
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ import logging
 
 from .. import config
 from ..migaku import auth, pull
-from ..notion_client import NotionClient
+from ..supabase_client import SupabaseClient
 from ..state import StateCache
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -51,30 +51,20 @@ def run(args: argparse.Namespace) -> int:
         print(f"Migaku core-server: FAILED ({exc})")
         rc = 1
 
-    # --- Notion reachability ----------------------------------------------
-    notion_token = config.notion_token()
-    notion_db = config.notion_database_id()
-    if notion_token and notion_db:
+    # --- Supabase reachability --------------------------------------------
+    supabase_url = config.supabase_url()
+    supabase_key = config.supabase_key()
+    if supabase_url and supabase_key:
         try:
-            notion = NotionClient(notion_token, notion_db)
-            info = notion.get_database()
-            title = "".join(
-                t.get("plain_text", "") for t in (info.get("title") or [])
-            ) or "(untitled)"
-            props = list((info.get("properties") or {}).keys())
-            v2_present = [n for n in ("Frequency", "Example") if n in props]
-            print(f"Notion: OK — '{title}' ({len(props)} columns)")
-            if v2_present:
-                print(f"  v2 columns present: {', '.join(v2_present)}")
-            else:
-                print("  v2 columns MISSING (Frequency, Example) — run `setup` "
-                      "to upgrade the schema.")
+            supabase = SupabaseClient(supabase_url, supabase_key, config.supabase_table())
+            supabase.healthcheck()
+            print(f"Supabase: OK — table '{config.supabase_table()}' is reachable")
         except RuntimeError as exc:
-            print(f"Notion: FAILED ({exc})")
+            print(f"Supabase: FAILED ({exc})")
             rc = 1
     else:
-        print("Notion: DISABLED (optional) — NOTION_TOKEN and/or "
-              "NOTION_DATABASE_ID missing from .env.")
+        print("Supabase: DISABLED (optional) — SUPABASE_URL and/or "
+              "SUPABASE_SERVICE_ROLE_KEY missing from .env.")
 
     # --- Local cache stats ------------------------------------------------
     if config.STATE_DB_PATH.exists():

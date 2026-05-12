@@ -1,6 +1,6 @@
-"""`migaku-notion sync` — pull from Migaku, enrich, sync into integration/cache.
+"""`migaku-supabase sync` — pull from Migaku, enrich, sync into Supabase/cache.
 
-Mirrors the structure of v1's `run_sync` (migaku-notion/sync/sync.py
+Mirrors the structure of v1's `run_sync` (migaku-supabase/sync/sync.py
 lines 646-836) but:
 
   - Source: a single GET /pull-sync (instead of paginated migoku calls).
@@ -11,14 +11,13 @@ lines 646-836) but:
     fallback for dict misses.
   - Difficulty: computed locally from /pull-sync's reviews + cards
     arrays (no separate /api/v1/words/difficult endpoint).
-  - Meaning: auto-populated into rows whose integration-side Meaning is
+  - Meaning: auto-populated into rows whose Supabase-side Meaning is
     currently blank, but ONLY on the first v2 sync against a given
     state.db (gated by `meta.v2_first_sync_done`). Pass
     `--no-dict-meanings` to opt out entirely.
 
-Notion is optional: if NOTION_* is unset (or --no-notion is passed), sync
-still runs fully and updates local `state.db` only. That keeps the core pull +
-enrichment + cache pipeline integration-agnostic and lets future sinks plug in.
+Supabase is optional: if SUPABASE_* is unset (or --no-supabase is passed), sync
+still runs fully and updates local `state.db` only.
 """
 from __future__ import annotations
 
@@ -33,16 +32,16 @@ from ..migaku.dict import MigakuDict
 from ..migaku.enrichment import WordEnricher
 from ..migaku.frequency import MigakuFrequency
 from ..models import CachedRow, Word
-from ..notion_client import (
-    NotionClient,
-    build_properties,
-    cache_row_from_notion_page,
+from ..supabase_client import (
+    SupabaseClient,
+    build_record,
+    cache_row_from_supabase_record,
     format_parts_of_speech,
 )
 from ..state import StateCache, has_tracked_changes
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +54,7 @@ def _cache_row_from_word(
     page_id: str,
     last_synced: str | None,
     archived: bool = False,
-    notion_meaning_was_blank: bool = True,
+    sink_meaning_was_blank: bool = True,
 ) -> CachedRow:
     sense_index = word.secondary if word.language == "zh" else None
     return CachedRow(
@@ -77,7 +76,7 @@ def _cache_row_from_word(
         meaning=word.meaning or None,
         example=word.example or None,
         frequency_stars=word.frequency_stars,
-        notion_meaning_was_blank=notion_meaning_was_blank,
+        sink_meaning_was_blank=sink_meaning_was_blank,
     )
 
 
@@ -106,15 +105,15 @@ def _merge_difficulty(words: list[Word], difficult: list[dict[str, Any]]) -> Non
                 w.part_of_speech = ", ".join(sorted(set(pos_list)))
 
 
-def _bootstrap_cache_from_notion(
-    notion: NotionClient,
+def _bootstrap_cache_from_supabase(
+    supabase: SupabaseClient,
     cache: StateCache | None,
 ) -> dict[str, CachedRow]:
-    pages = notion.query_all_pages()
+    records = supabase.query_all_rows()
     out: dict[str, CachedRow] = {}
     skipped = 0
-    for page in pages:
-        row = cache_row_from_notion_page(page)
+    for record in records:
+        row = cache_row_from_supabase_record(record)
         if row is None:
             skipped += 1
             continue
@@ -122,8 +121,8 @@ def _bootstrap_cache_from_notion(
             cache.upsert(row)
         out[row.migaku_key] = row
     log.info(
-        "Bootstrap: %d Notion pages -> %d cached rows (%d skipped — no Migaku key)",
-        len(pages), len(out), skipped,
+        "Bootstrap: %d Supabase rows -> %d cached rows (%d skipped — no Migaku key)",
+        len(records), len(out), skipped,
     )
     return out
 
@@ -133,18 +132,23 @@ def _local_page_id(migaku_key: str) -> str:
     return f"local:{migaku_key}"
 
 
+def _supabase_page_id(migaku_key: str) -> str:
+    """Stable synthetic row id for Supabase mode."""
+    return f"supabase:{migaku_key}"
+
+
 # ---------------------------------------------------------------------------
 # run()
 # ---------------------------------------------------------------------------
 
 def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
-    notion_token = config.notion_token()
-    notion_db = config.notion_database_id()
-    notion_enabled = (not args.no_notion) and bool(notion_token and notion_db)
-    if args.no_notion:
-        log.info("Notion integration disabled via --no-notion; syncing to local cache only.")
-    elif not notion_enabled:
-        log.info("NOTION_TOKEN/NOTION_DATABASE_ID not set; running in local-only mode.")
+    supabase_url = config.supabase_url()
+    supabase_key = config.supabase_key()
+    supabase_enabled = (not args.no_supabase) and bool(supabase_url and supabase_key)
+    if args.no_supabase:
+        log.info("Supabase disabled via --no-supabase; syncing to local cache only.")
+    elif not supabase_enabled:
+        log.info("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set; running in local-only mode.")
 
     # --- Migaku auth ---------------------------------------------------
     try:
@@ -161,9 +165,16 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
         config.upsert_env_values({"MIGAKU_REFRESH_TOKEN": session.refresh_token})
 
     device_id = config.get_or_create_device_id()
-    notion = NotionClient(notion_token, notion_db) if notion_enabled else None
+    supabase = (
+        SupabaseClient(supabase_url, supabase_key, config.supabase_table())
+        if supabase_enabled else None
+    )
+    sink_rows: dict[str, CachedRow] = {}
+    if supabase is not None:
+        log.info("Loading existing Supabase rows for destination diff ...")
+        sink_rows = _bootstrap_cache_from_supabase(supabase, None)
 
-    # --- Open cache (load + maybe bootstrap from Notion) ---------------
+    # --- Open cache (load + maybe bootstrap from Supabase) -------------
     cache: StateCache | None
     cache_rows: dict[str, CachedRow]
     if args.dry_run:
@@ -181,9 +192,9 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
                 len(cache_rows), cache_server_version, cache_first_sync_done,
             )
         else:
-            if notion is not None:
-                log.info("Dry-run: no state.db — bootstrapping in-memory from Notion ...")
-                cache_rows = _bootstrap_cache_from_notion(notion, None)
+            if supabase is not None:
+                log.info("Dry-run: no state.db — bootstrapping in-memory from Supabase ...")
+                cache_rows = dict(sink_rows)
             else:
                 log.info("Dry-run: no state.db and no integration sink configured; using empty cache.")
                 cache_rows = {}
@@ -194,10 +205,12 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
         cache_rows = cache.load_all()
         cache_server_version = cache.get_server_version()
         cache_first_sync_done = cache.is_v2_first_sync_done()
-        if not cache_rows and notion is not None:
-            log.info("Local cache empty — bootstrapping from Notion (one-time, "
+        if not cache_rows and supabase is not None:
+            log.info("Local cache empty — bootstrapping from Supabase (one-time, "
                      "preserves existing rows) ...")
-            cache_rows = _bootstrap_cache_from_notion(notion, cache)
+            cache_rows = dict(sink_rows)
+            for row in sink_rows.values():
+                cache.upsert(row)
         # Mirror the device id so future runs can sanity-check it matches .env.
         cache.set_device_id(device_id)
 
@@ -283,7 +296,7 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
     # --- Diff + upsert against integration sink -----------------------
     now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     do_meaning_writes = (not cache_first_sync_done) and (not args.no_dict_meanings)
-    sink_name = "Notion" if notion is not None else "local cache"
+    sink_name = "Supabase" if supabase is not None else "local cache"
     log.info(
         "Writing to %s (dry_run=%s, first_sync=%s, meaning_writes=%s) ...",
         sink_name, args.dry_run, not cache_first_sync_done, do_meaning_writes,
@@ -294,79 +307,94 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
     for i, word in enumerate(words, 1):
         seen_keys.add(word.key)
         cached = cache_rows.get(word.key)
+        sink_cached = sink_rows.get(word.key) if supabase is not None else cached
+        destination_missing = supabase is not None and word.key not in sink_rows
 
         # Decide whether to include Meaning in this row's payload.
         # Cases (matches the pseudo-code in this module's docstring):
         #   - First v2 sync, --no-dict-meanings NOT set, AND row has a
         #     meaning to write, AND (brand-new OR cached row's
-        #     notion_meaning_was_blank), AND we have a real meaning -> True
+        #     sink_meaning_was_blank), AND we have a real meaning -> True
         #   - else False (matches v1's "Meaning is sacrosanct" rule).
         include_meaning = (
-            do_meaning_writes
+            (do_meaning_writes or destination_missing)
+            and not args.no_dict_meanings
             and bool(word.meaning)
-            and (cached is None or cached.notion_meaning_was_blank)
+            and (
+                destination_missing
+                or sink_cached is None
+                or sink_cached.sink_meaning_was_blank
+            )
         )
 
-        if cached is None:
+        if cached is None or destination_missing:
             if args.dry_run:
                 created += 1
             else:
-                if notion is not None:
-                    page = notion.create_page(
-                        build_properties(word, include_meaning=include_meaning, now_iso=now_iso)
+                if supabase is not None:
+                    supabase.upsert_row(
+                        build_record(word, include_meaning=include_meaning, now_iso=now_iso)
                     )
-                    page_id = page.get("id")
-                    if not page_id:
-                        log.error("Notion create returned no page id for %s", word.key)
-                        if cache is not None:
-                            cache.close()
-                        return 3
+                    page_id = _supabase_page_id(word.key)
                 else:
                     page_id = _local_page_id(word.key)
-                # New rows: nothing was in Notion before, so by definition
+                # New rows: nothing was in Supabase before, so by definition
                 # the Meaning was blank. (We may have just written one.)
                 row = _cache_row_from_word(
                     word, page_id=page_id, last_synced=now_iso,
-                    notion_meaning_was_blank=not include_meaning,
+                    sink_meaning_was_blank=not include_meaning,
                 )
                 cache.upsert(row)   # type: ignore[union-attr]
                 cache_rows[word.key] = row
+                if supabase is not None:
+                    sink_rows[word.key] = row
                 created += 1
 
         elif cached.archived:
             if args.dry_run:
                 updated += 1
             else:
-                if notion is not None:
-                    notion.update_page(
-                        cached.page_id,
-                        build_properties(word, include_meaning=include_meaning, now_iso=now_iso),
-                        archived=False,
+                if supabase is not None:
+                    result = supabase.update_row(
+                        word.key,
+                        build_record(word, include_meaning=include_meaning, now_iso=now_iso)
                     )
+                    if not result:
+                        supabase.upsert_row(
+                            build_record(word, include_meaning=include_meaning, now_iso=now_iso)
+                        )
                 row = _cache_row_from_word(
                     word, page_id=cached.page_id, last_synced=now_iso,
                     archived=False,
-                    notion_meaning_was_blank=cached.notion_meaning_was_blank and not include_meaning,
+                    sink_meaning_was_blank=cached.sink_meaning_was_blank and not include_meaning,
                 )
                 cache.upsert(row)   # type: ignore[union-attr]
                 cache_rows[word.key] = row
+                if supabase is not None:
+                    sink_rows[word.key] = row
                 updated += 1
 
         elif has_tracked_changes(word, cached) or include_meaning:
             if args.dry_run:
                 updated += 1
             else:
-                if notion is not None:
-                    notion.update_page(
-                        cached.page_id,
-                        build_properties(word, include_meaning=include_meaning, now_iso=now_iso),
+                if supabase is not None:
+                    result = supabase.update_row(
+                        word.key,
+                        build_record(word, include_meaning=include_meaning, now_iso=now_iso)
                     )
+                    if not result:
+                        supabase.upsert_row(
+                            build_record(word, include_meaning=include_meaning, now_iso=now_iso)
+                        )
                 row = _cache_row_from_word(
                     word, page_id=cached.page_id, last_synced=now_iso,
-                    notion_meaning_was_blank=cached.notion_meaning_was_blank and not include_meaning,
+                    sink_meaning_was_blank=cached.sink_meaning_was_blank and not include_meaning,
                 )
                 cache.upsert(row)   # type: ignore[union-attr]
                 cache_rows[word.key] = row
+                if supabase is not None:
+                    sink_rows[word.key] = row
                 updated += 1
 
         else:
@@ -388,8 +416,8 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
             if args.dry_run:
                 archived_count += 1
                 continue
-            if notion is not None and not r.page_id.startswith("local:"):
-                notion.archive_page(r.page_id)
+            if supabase is not None:
+                supabase.archive_row(r.migaku_key, now_iso)
             cache.mark_archived(r.migaku_key, archived=True, last_synced=now_iso)   # type: ignore[union-attr]
             archived_count += 1
 

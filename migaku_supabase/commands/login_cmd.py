@@ -1,4 +1,4 @@
-"""`migaku-notion login` — derive a long-lived Firebase refresh token.
+"""`migaku-supabase login` — derive a long-lived Firebase refresh token.
 
 Run this once after first install (or after a password reset). It calls
 `identitytoolkit.googleapis.com/v1/accounts:signInWithPassword`, writes
@@ -16,7 +16,7 @@ from .. import config
 from ..migaku import auth
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 def run(args: argparse.Namespace) -> int:

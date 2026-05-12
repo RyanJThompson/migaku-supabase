@@ -12,11 +12,10 @@ v2 additions on both:
                            matching the star rating shown in the
                            extension UI.
 
-`CachedRow` additionally carries `notion_meaning_was_blank` — captured
-once at bootstrap so the first-v2-sync auto-populate path knows whether
-a row's Meaning column is safe to write to. After that flag has been
-acted on (and `meta.v2_first_sync_done` flips to true), it stops
-mattering.
+`CachedRow` additionally carries `sink_meaning_was_blank` — captured
+once at bootstrap so the first sync can decide whether the destination
+Meaning column is safe to write to. After that flag has been acted on
+(and `meta.v2_first_sync_done` flips to true), it stops mattering.
 
 `MigakuEntity` wraps the wire-shape of a single record from /pull-sync.
 """
@@ -41,7 +40,7 @@ class Word:
     pinyin_marks: str | None = None
     pinyin_numeric: str | None = None
 
-    # v2 additions, populated by migaku_notion.migaku.enrichment.enrich().
+    # v2 additions, populated by migaku_supabase.migaku.enrichment.enrich().
     meaning: str | None = None
     example: str | None = None
     frequency_stars: int | None = None
@@ -80,12 +79,12 @@ class CachedRow:
     meaning: str | None = None
     example: str | None = None
     frequency_stars: int | None = None
-    # True iff, at the moment we first observed this Notion page, its
-    # Meaning column was empty. Used to decide whether to auto-populate
-    # Meaning on the first v2 sync (Greg, 2026-05-07: only fill blanks,
-    # never overwrite). After that first sync runs, stays as a record
-    # of the original state but is no longer consulted.
-    notion_meaning_was_blank: bool = True
+    # True iff, at the moment we first observed this destination row,
+    # its Meaning column was empty. Used to decide whether to
+    # auto-populate Meaning on the first v2 sync: only fill blanks,
+    # never overwrite. After that first sync runs, this is no longer
+    # consulted.
+    sink_meaning_was_blank: bool = True
 
 
 @dataclass

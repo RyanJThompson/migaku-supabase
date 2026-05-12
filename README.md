@@ -1,153 +1,334 @@
-# migaku-notion-v2
+# migaku-supabase
 
-Mirror your [Migaku](https://migaku.com) vocabulary into a Notion database (or keep a local cache only) so you can quiz, filter, and export your real word list. Pure Python: no Docker, no [migoku](https://github.com/khatibomar/migoku) server. This is the spiritual successor to the older [migaku-notion](https://github.com/gfsincere/migaku-notion) fork: same CLI shape and cache idea, more functionality (direct Migaku API, dictionary and frequency enrichment, optional Notion).
+Sync your [Migaku](https://migaku.com) vocabulary into a Supabase Postgres table.
+
+This is a local Python CLI. It pulls your Migaku vocabulary with Migaku's HTTP sync API, enriches words with Migaku dictionary/frequency data, writes rows to Supabase, and keeps a local `state.db` cache so later runs only write changed rows.
+
+## What It Does
+
+- Pulls Migaku words directly from `core-server.migaku.com`.
+- Supports incremental syncs and `--full-refresh`.
+- Writes to `public.migaku_words` in Supabase.
+- Keeps user-editable `meaning` safe after the first sync.
+- Computes fail rate/review counts locally from Migaku review data.
+- Exports the local cache to CSV or XLSX.
+- Can run without Supabase using `--no-supabase`.
 
 ## Install
 
-```powershell
-cd <your-projects-dir>
-git clone https://github.com/gfsincere/migaku-notion-v2.git
-cd migaku-notion-v2
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-# Linux/macOS: source .venv/bin/activate
+```bash
+git clone https://github.com/RyanJThompson/migaku-supabase.git
+cd migaku-supabase
+
+python3 -m venv .venv
+source .venv/bin/activate
+
 pip install -r requirements.txt
-python -m migaku_notion setup
+python -m migaku_supabase setup
 ```
 
-You need Python 3.11+, a Migaku account, and (only if you want Notion) a Notion internal integration and database. `setup` can skip Notion; then use `sync --no-notion` or leave `NOTION_TOKEN` / `NOTION_DATABASE_ID` unset.
+Optional editable install:
 
-## Upgrade from migaku-notion
-
-If you used the older repo under `migaku-notion/`:
-
-1. Clone and install v2 as above (separate folder and venv).
-2. Copy `state.db` from `migaku-notion/sync/` into this repo root (same filename: `state.db`).
-3. Copy `migaku-notion/sync/.env` here as `.env`, then replace Migoku vars with Migaku: set `MIGAKU_EMAIL` / `MIGAKU_PASSWORD` (or run `python -m migaku_notion login` to write `MIGAKU_REFRESH_TOKEN`), remove `MIGOKU_*`. Keep `NOTION_TOKEN`, `NOTION_DATABASE_ID`, and `SYNC_*` if you use Notion.
-4. Run `python -m migaku_notion status` then `python -m migaku_notion sync --dry-run`, then `python -m migaku_notion sync`.
-
-Full detail: [MIGRATION-FROM-V1.md](./MIGRATION-FROM-V1.md).
-
-## Why v2
-
-- Talks to Migaku over HTTPS (`core-server.migaku.com` `/pull-sync`, Firebase auth) instead of a local migoku Go server.
-- Enrichment from Migaku public dictionary SQLite plus per-language `frequency.db`; `pypinyin` only when the dict misses a term.
-- Fail rate and review counts computed locally from the pull payload (`cards`, `cardWordRelations`, `reviews`), not migoku's difficult-words endpoint.
-- Notion is optional: omit credentials or pass `sync --no-notion` to update `state.db` only.
-- Planned: `/push/enqueue` and SRSMEDIA uploads for writing cards and media back to Migaku (see `migaku_notion/migaku/push.py` and `files.py`; pair with your own HAR captures of those endpoints when wiring writes).
-
-Credit: the data model and early reverse engineering came from [migoku](https://github.com/khatibomar/migoku); v2 does not run it.
-
-## Architecture
-
-```
-                       Migaku account
-                       (your data)
-                             │
-                             │  1. POST identitytoolkit/v1/accounts:signInWithPassword
-                             │     → refreshToken + idToken
-                             │  2. POST securetoken/v1/token  (refresh on each run)
-                             ▼
-                       Firebase Auth
-                             │
-                             │  Authorization: Bearer <idToken>
-                             │
-              ┌──────────────┼─────────────────────────┐
-              ▼              ▼                         ▼
-   GET /pull-sync    POST /push/enqueue       PUT /data/SRSMEDIA/<file>
-   (core-server)     (core-server)            (file-sync-worker-api)
-   read vocabulary   write cards (planned)    upload audio/images (planned)
-              │              │                         │
-              └──────────────┼─────────────────────────┘
-                             ▼
-                  migaku-notion-v2 (Python)
-                             │  ┌──────────────────────────────────┐
-                             │  │  ~/.migaku-notion-v2/dicts/        │
-                             │  │  dictionary + frequency SQLite   │
-                             │  └──────────────────────────────────┘
-                             │
-                             │  pull-sync (paginate serverVersion)
-                             │  enrich from dict + frequency.db
-                             │  compute fail rates from cards / relations / reviews
-                             │  diff against state.db
-                             │  upsert optional Notion DB, or cache-only
-                             ▼
-                Notion (optional)  +  state.db
+```bash
+pip install -e .
+migaku-supabase setup
 ```
 
-`POST /push/enqueue` and SRSMEDIA upload are the next wiring targets; read path and Notion or local-only sync are what works today.
+You need:
 
-## migoku vs v2
+- Python 3.11+
+- A Migaku account
+- A Supabase project if you want cloud sync
 
-[migoku](https://github.com/khatibomar/migoku) is community Go code that logs into Migaku, pulls the SRS-style payload, and exposes it over `localhost` REST. This repo talks to the same conceptual data without running migoku.
+## Supabase Values You Need
 
-| Aspect | migoku | v2 (this repo) |
-|--------|--------|----------------|
-| Runtime | Go binary you run locally (often via Docker) | Python package only |
-| Migaku I/O | Download / cache SRS sync data, serve REST on localhost | HTTPS to `core-server.migaku.com`, Firebase auth, `GET /pull-sync` |
-| Read shape | SQLite + HTTP queries your script calls | JSON sync payload; client paginates `serverVersion` until caught up |
-| Mandarin readings / gloss | Not the main REST story | Migaku public dict SQLite + `frequency.db`; `pypinyin` if dict misses |
-| Fail rate / review stats | SQL and endpoints over the local DB | Aggregated in Python from `cards`, `cardWordRelations`, `reviews` in the pull payload |
-| Notion | Not migoku's job; other tools sat on top | Built-in optional Notion upsert + same `state.db` diff idea |
-| Write back to Migaku | Present in Go reference; most bridges stayed read-only | Read path shipped; `/push/enqueue` + media upload still to implement |
+Open your project in the [Supabase dashboard](https://supabase.com/dashboard/projects).
 
-## Commands
+### `SUPABASE_URL`
 
-```powershell
-python -m migaku_notion status
-python -m migaku_notion sync
-python -m migaku_notion sync --full-refresh
-python -m migaku_notion sync --no-notion
-python -m migaku_notion sync --dry-run
-python -m migaku_notion rebuild-cache
-python -m migaku_notion chars
-python -m migaku_notion export --csv out.csv
-python -m migaku_notion export --xlsx out.xlsx
+Where to find it:
+
+1. Open your Supabase project.
+2. Go to **Project Settings**.
+3. Open **API**.
+4. Copy **Project URL**.
+
+It looks like:
+
+```bash
+SUPABASE_URL=https://your-project-ref.supabase.co
 ```
 
-Re-runs diff against `state.db` so Notion only gets PATCHes when tracked fields change. On the first v2 sync, dict meaning is written only into rows whose Meaning is blank (unless `--no-dict-meanings`); after that, Meaning is not overwritten.
+### `SUPABASE_SERVICE_ROLE_KEY`
 
-`MIGAKU_DEVICE_ID` in `.env` is a stable 32-hex device id for Migaku; changing it behaves like a new client (full pull next time).
+Where to find it:
 
-## Notion schema
+1. Open your Supabase project.
+2. Go to **Project Settings**.
+3. Open **API**.
+4. Copy the **service_role** key, not the anon key.
 
-Same database properties as the older migaku-notion tool, plus columns `Frequency` (number) and `Example` (rich text). `setup` can add missing columns on an existing DB.
+It looks like:
 
-| Property | Type | Notes |
-|----------|------|--------|
-| Word | Title | dictForm |
-| Pinyin | Rich text | From dict per sense; else pypinyin for zh |
-| Meaning | Rich text | First sync fills blanks only |
-| Example | Rich text | v2 |
-| Pinyin (numeric) | Rich text | zh |
-| Status | Select | KNOWN, LEARNING, etc. |
-| Frequency | Number | v2, from frequency.db |
-| Fail rate % | Number | Local from reviews |
-| Total reviews | Number | |
-| Failed reviews | Number | |
-| Part of speech | Rich text | |
-| Language | Select | e.g. zh, ja |
-| Last synced | Date | |
-| Migaku key | Rich text | lang\|dictForm\|secondary |
-| Sense # | Rich text | zh homonym index |
+```bash
+SUPABASE_SERVICE_ROLE_KEY=eyJ...
+```
 
-Dictionary catalog: [index2.json](https://migaku-public-data.migaku.com/dicts/index2.json). Cached under `~/.migaku-notion-v2/dicts/`.
+Keep this private. It bypasses Row Level Security and should only be used by this local sync job or a trusted server.
 
-## Next milestones
+### `SUPABASE_TABLE`
 
-Push and media to Migaku (`push_enqueue`, SRSMEDIA upload). Optional: Notion list import vs Migaku gap and enqueue. Optional: Firestore live sync.
+Use the default:
+
+```bash
+SUPABASE_TABLE=migaku_words
+```
+
+The full table name is:
+
+```text
+public.migaku_words
+```
+
+### `SUPABASE_DB_URL` Optional
+
+This is only needed if you want the CLI to create/update the table schema for you with `init-db` or during `setup`.
+
+You do not need `SUPABASE_DB_URL` for normal syncing.
+
+Where to find it:
+
+1. Open your Supabase project.
+2. Click **Connect** in the top bar.
+3. Choose **Session pooler** if your network does not support IPv6.
+4. Copy the URI.
+5. Replace `[YOUR-PASSWORD]` with your Supabase database password.
+
+For Supabase pooler URLs, the username usually includes your project ref:
+
+```text
+postgresql://postgres.YOUR_PROJECT_REF:YOUR_DATABASE_PASSWORD@aws-0-region.pooler.supabase.com:5432/postgres
+```
+
+Example:
+
+```text
+postgresql://postgres.abcdefghijklmnopqrst:myDatabasePassword123@aws-0-eu-west-1.pooler.supabase.com:5432/postgres
+```
+
+Use your database password, not the service-role key.
+
+If your password contains special characters, URL-encode them:
+
+| Character | Encoded |
+| --- | --- |
+| `@` | `%40` |
+| `#` | `%23` |
+| `/` | `%2F` |
+| `:` | `%3A` |
+
+If you do not know the database password, reset it in **Project Settings** -> **Database**.
+
+## Create The Table
+
+Recommended: use Supabase SQL Editor.
+
+1. Open your Supabase project.
+2. Go to **SQL Editor**.
+3. Paste the contents of [`supabase/schema.sql`](./supabase/schema.sql).
+4. Run it.
+
+Alternative: use the CLI with `SUPABASE_DB_URL`.
+
+```bash
+python -m migaku_supabase init-db --db-url "postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@aws-0-region.pooler.supabase.com:5432/postgres"
+```
+
+The schema enables Row Level Security and adds a `service_role` policy so the sync can always read/write with `SUPABASE_SERVICE_ROLE_KEY`.
+
+## Configure
+
+The setup wizard writes `.env`:
+
+```bash
+python -m migaku_supabase setup
+```
+
+You can also create `.env` manually from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Minimum cloud-sync config:
+
+```bash
+MIGAKU_EMAIL=you@example.com
+MIGAKU_REFRESH_TOKEN=...
+MIGAKU_DEVICE_ID=...
+
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_TABLE=migaku_words
+
+SYNC_LANG=zh
+SYNC_STATUS=KNOWN,LEARNING
+SYNC_DIFFICULT_LIMIT=2000
+```
+
+The wizard can derive `MIGAKU_REFRESH_TOKEN` from your Migaku email/password. It does not store your Migaku password by default.
+
+## Run
+
+Check connectivity:
+
+```bash
+python -m migaku_supabase status
+```
+
+Preview the sync:
+
+```bash
+python -m migaku_supabase sync --dry-run
+```
+
+Run the sync:
+
+```bash
+python -m migaku_supabase sync
+```
+
+First run or repair run:
+
+```bash
+python -m migaku_supabase sync --full-refresh
+```
+
+Sync all statuses:
+
+```bash
+python -m migaku_supabase sync --full-refresh --status ALL
+```
+
+Local-only mode:
+
+```bash
+python -m migaku_supabase sync --no-supabase
+```
+
+Archive stale Supabase rows:
+
+```bash
+python -m migaku_supabase sync --archive-stale
+```
+
+Use `--archive-stale` carefully. It sets `archived=true` for cached rows that no longer appear in Migaku for the selected language/status filter.
+
+## Export
+
+```bash
+python -m migaku_supabase export --csv out.csv
+python -m migaku_supabase export --xlsx out.xlsx
+```
+
+To pull the latest `meaning` values from Supabase during export:
+
+```bash
+python -m migaku_supabase export --xlsx out.xlsx --with-meaning
+```
+
+## Table Schema
+
+The default table is `public.migaku_words`.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `migaku_key` | text primary key | `<lang>|<dictForm>|<secondary>` |
+| `word` | text | Migaku `dictForm` |
+| `pinyin` | text | Tone marks for zh, secondary reading for other languages |
+| `meaning` | text | Filled only on first sync for blank rows unless `--no-dict-meanings` is used |
+| `example` | text | Dictionary/example enrichment |
+| `pinyin_numeric` | text | Numeric tones for zh |
+| `status` | text | `KNOWN`, `LEARNING`, `UNKNOWN`, `IGNORED`, etc. |
+| `frequency` | integer | 1-5 frequency star bucket |
+| `fail_rate_pct` | numeric | Local review aggregation from Migaku payload |
+| `total_reviews` | integer | Local review aggregation |
+| `failed_reviews` | integer | Local review aggregation |
+| `part_of_speech` | text | Comma-separated POS values |
+| `language` | text | Migaku language code |
+| `last_synced` | timestamptz | Last write time |
+| `sense_index` | text | zh homonym/sense index |
+| `archived` | boolean | Soft archive flag |
+| `created_at` | timestamptz | Supabase row creation time |
+| `updated_at` | timestamptz | Maintained by trigger |
+
+Indexes are included for active `language/status` filtering and `last_synced` sorting.
+
+## Security
+
+The bundled schema enables RLS:
+
+```sql
+alter table public.migaku_words enable row level security;
+```
+
+It grants full access only to `service_role`:
+
+```sql
+create policy service_role_full_access
+on public.migaku_words
+for all
+to service_role
+using (true)
+with check (true);
+```
+
+This means:
+
+- The local sync can read/write using `SUPABASE_SERVICE_ROLE_KEY`.
+- Browser clients using anon/authenticated keys do not get access unless you add separate policies.
+- `.env` and `state.db` are ignored by git and should not be committed.
+
+## Troubleshooting
+
+### Sync says no words returned
+
+You may already be at the latest Migaku cursor. Run:
+
+```bash
+python -m migaku_supabase sync --full-refresh
+```
+
+### Supabase has fewer rows than `state.db`
+
+Run a full refresh. The sync checks actual Supabase destination rows and creates missing rows:
+
+```bash
+python -m migaku_supabase sync --full-refresh
+```
+
+### Direct Postgres connection fails on IPv6
+
+Use the **Session pooler** connection string from Supabase's **Connect** dialog. The direct database host may require IPv6; the pooler works better on IPv4-only networks.
+
+### Password authentication failed for user `postgres`
+
+For the Session pooler, the username is usually:
+
+```text
+postgres.YOUR_PROJECT_REF
+```
+
+Use your database password, not your service-role key.
+
+### Service-role key works but `init-db` fails
+
+That is expected if `SUPABASE_DB_URL` is wrong. Normal sync uses `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`; schema creation uses a Postgres connection URL. You can skip `init-db` and run [`supabase/schema.sql`](./supabase/schema.sql) manually in SQL Editor.
 
 ## Credits
 
-- [khatibomar/migoku](https://github.com/khatibomar/migoku)
-- [Migaku](https://migaku.com)
-- [pypinyin](https://github.com/mozillazg/python-pinyin)
-- [Notion](https://notion.so)
-
-## Support
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/blacktonystark)
+Based on the read-side Migaku API work from [`gfsincere/migaku-notion-v2`](https://github.com/gfsincere/migaku-notion-v2), adapted to Supabase.
 
 ## License
 
-MIT.
+MIT

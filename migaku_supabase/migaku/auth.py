@@ -38,7 +38,7 @@ import requests
 from . import const
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 # Refresh proactively when the id_token has fewer than this many seconds
@@ -205,5 +205,5 @@ def auth_session_from_env(
         return AuthSession.from_email_password(email, password)
     raise RuntimeError(
         "No usable Migaku credentials. Set MIGAKU_REFRESH_TOKEN (after running "
-        "`python -m migaku_notion login`) or MIGAKU_EMAIL + MIGAKU_PASSWORD in .env."
+        "`python -m migaku_supabase login`) or MIGAKU_EMAIL + MIGAKU_PASSWORD in .env."
     )

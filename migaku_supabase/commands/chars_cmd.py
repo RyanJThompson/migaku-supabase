@@ -1,4 +1,4 @@
-"""`migaku-notion chars` — unique-Hanzi-character report from state.db.
+"""`migaku-supabase chars` — unique-Hanzi-character report from state.db.
 
 Pure local, no Migaku API calls; ported verbatim from v1.
 """
@@ -11,7 +11,7 @@ from .. import config
 from ..state import StateCache
 
 
-log = logging.getLogger("migaku-notion")
+log = logging.getLogger("migaku-supabase")
 
 
 def _is_cjk(ch: str) -> bool:
@@ -31,8 +31,8 @@ def _is_cjk(ch: str) -> bool:
 
 def run(args: argparse.Namespace) -> int:
     if not config.STATE_DB_PATH.exists():
-        log.error("Local cache (%s) not initialised. Run `python -m migaku_notion sync` "
-                  "or `python -m migaku_notion rebuild-cache` first.",
+        log.error("Local cache (%s) not initialised. Run `python -m migaku_supabase sync` "
+                  "or `python -m migaku_supabase rebuild-cache` first.",
                   config.STATE_DB_PATH.name)
         return 1
 
