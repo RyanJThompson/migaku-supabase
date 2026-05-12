@@ -16,8 +16,9 @@ on:
         required: true
         default: "KNOWN,LEARNING"
   schedule:
-    # Daily at 06:00 UTC. GitHub schedules are UTC and can drift by a few minutes.
-    - cron: "0 6 * * *"
+    # GitHub schedules are UTC. Run hourly, then gate the job to
+    # 08:00-midnight Europe/London so daylight saving time is handled correctly.
+    - cron: "0 * * * *"
 
 concurrency:
   group: migaku-supabase-sync
@@ -40,19 +41,35 @@ jobs:
       SYNC_DIFFICULT_LIMIT: ${{ vars.SYNC_DIFFICULT_LIMIT || '2000' }}
 
     steps:
+      - name: Check London sync window
+        id: london_window
+        run: |
+          london_hour="$(TZ=Europe/London date +%H)"
+          if [ "$london_hour" -eq 0 ] || { [ "$london_hour" -ge 8 ] && [ "$london_hour" -le 23 ]; }; then
+            echo "run_sync=true" >> "$GITHUB_OUTPUT"
+            echo "Within London sync window: ${london_hour}:00"
+          else
+            echo "run_sync=false" >> "$GITHUB_OUTPUT"
+            echo "Outside London sync window: ${london_hour}:00"
+          fi
+
       - name: Check out repository
+        if: github.event_name == 'workflow_dispatch' || steps.london_window.outputs.run_sync == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: github.event_name == 'workflow_dispatch' || steps.london_window.outputs.run_sync == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
       - name: Install package
+        if: github.event_name == 'workflow_dispatch' || steps.london_window.outputs.run_sync == 'true'
         run: python -m pip install -e .
 
       - name: Validate required secrets
+        if: github.event_name == 'workflow_dispatch' || steps.london_window.outputs.run_sync == 'true'
         run: |
           missing=0
           for name in MIGAKU_EMAIL MIGAKU_REFRESH_TOKEN MIGAKU_DEVICE_ID SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
@@ -64,9 +81,11 @@ jobs:
           exit "$missing"
 
       - name: Check connectivity
+        if: github.event_name == 'workflow_dispatch' || steps.london_window.outputs.run_sync == 'true'
         run: migaku-supabase status --lang "$SYNC_LANG"
 
       - name: Sync Migaku to Supabase
+        if: github.event_name == 'workflow_dispatch' || steps.london_window.outputs.run_sync == 'true'
         run: |
           args=(sync --status "$SYNC_STATUS")
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.full_refresh || 'true' }}" = "true" ]; then

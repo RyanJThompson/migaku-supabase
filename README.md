@@ -228,7 +228,9 @@ Use `--archive-stale` carefully. It sets `archived=true` for cached rows that no
 
 The repository includes a scheduled GitHub Actions workflow at [`.github/workflows/sync.yml`](./.github/workflows/sync.yml).
 
-It runs daily at `06:00 UTC` and can also be started manually from the GitHub **Actions** tab.
+It runs once per hour from `08:00` through `00:00` midnight in the `Europe/London` timezone and can also be started manually from the GitHub **Actions** tab.
+
+GitHub schedules are UTC, so the workflow triggers hourly and then checks the current London hour before doing any sync work. That keeps the schedule correct across daylight saving time changes.
 
 Why GitHub Actions instead of Supabase Cron:
 
@@ -267,7 +269,7 @@ Manual run:
 3. Select **Sync Migaku to Supabase**.
 4. Click **Run workflow**.
 
-The scheduled run uses `--full-refresh` so the destination table can repair itself if rows were deleted or the GitHub runner starts from a fresh cache.
+Scheduled runs use `--full-refresh` so the destination table can repair itself if rows were deleted or the GitHub runner starts from a fresh cache.
 
 ### Supabase Cron Alternative
 
