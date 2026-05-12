@@ -18,7 +18,7 @@ on:
   schedule:
     # GitHub schedules are UTC. Run hourly, then gate the job to
     # 08:00-midnight Europe/London so daylight saving time is handled correctly.
-    - cron: "0 * * * *"
+    - cron: "17 * * * *"
 
 concurrency:
   group: migaku-supabase-sync
