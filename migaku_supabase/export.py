@@ -27,6 +27,8 @@ EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("Failed reviews",   "failed_reviews"),
     ("Part of speech",   "part_of_speech"),
     ("Language",         "lang"),
+    ("First learning at", "first_learning_at"),
+    ("First known at",   "first_known_at"),
     ("Last synced",      "last_synced"),
     ("Migaku key",       "migaku_key"),
     ("Sense #",          "sense_index"),

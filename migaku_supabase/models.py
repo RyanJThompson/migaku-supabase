@@ -44,6 +44,8 @@ class Word:
     meaning: str | None = None
     example: str | None = None
     frequency_stars: int | None = None
+    first_learning_at: str | None = None
+    first_known_at: str | None = None
 
     @property
     def key(self) -> str:
@@ -79,6 +81,8 @@ class CachedRow:
     meaning: str | None = None
     example: str | None = None
     frequency_stars: int | None = None
+    first_learning_at: str | None = None
+    first_known_at: str | None = None
     # True iff, at the moment we first observed this destination row,
     # its Meaning column was empty. Used to decide whether to
     # auto-populate Meaning on the first v2 sync: only fill blanks,

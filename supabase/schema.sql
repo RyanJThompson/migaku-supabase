@@ -13,11 +13,19 @@ create table if not exists public.migaku_words (
   part_of_speech text,
   language text not null,
   last_synced timestamptz,
+  first_learning_at timestamptz,
+  first_known_at timestamptz,
   sense_index text,
   archived boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.migaku_words
+  add column if not exists first_learning_at timestamptz;
+
+alter table public.migaku_words
+  add column if not exists first_known_at timestamptz;
 
 create index if not exists migaku_words_language_status_active_idx
   on public.migaku_words (language, status)

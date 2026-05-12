@@ -307,6 +307,8 @@ The default table is `public.migaku_words`.
 | `failed_reviews` | integer | Local review aggregation |
 | `part_of_speech` | text | Comma-separated POS values |
 | `language` | text | Migaku language code |
+| `first_learning_at` | timestamptz | First Migaku history event where status became `LEARNING` |
+| `first_known_at` | timestamptz | First Migaku history event where status became `KNOWN` |
 | `last_synced` | timestamptz | Last write time |
 | `sense_index` | text | zh homonym/sense index |
 | `archived` | boolean | Soft archive flag |
@@ -314,6 +316,30 @@ The default table is `public.migaku_words`.
 | `updated_at` | timestamptz | Maintained by trigger |
 
 Indexes are included for active `language/status` filtering and `last_synced` sorting.
+
+Example: words first started today, useful for daily sentence generation:
+
+```sql
+select word, pinyin, meaning, example, first_learning_at
+from public.migaku_words
+where language = 'zh'
+  and archived = false
+  and (first_learning_at at time zone 'Europe/London')::date =
+      (now() at time zone 'Europe/London')::date
+order by first_learning_at asc;
+```
+
+Example: words first marked known today:
+
+```sql
+select word, pinyin, meaning, example, first_known_at
+from public.migaku_words
+where language = 'zh'
+  and archived = false
+  and (first_known_at at time zone 'Europe/London')::date =
+      (now() at time zone 'Europe/London')::date
+order by first_known_at asc;
+```
 
 ## Security
 

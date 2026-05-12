@@ -29,11 +29,19 @@ create table if not exists public.migaku_words (
   part_of_speech text,
   language text not null,
   last_synced timestamptz,
+  first_learning_at timestamptz,
+  first_known_at timestamptz,
   sense_index text,
   archived boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.migaku_words
+  add column if not exists first_learning_at timestamptz;
+
+alter table public.migaku_words
+  add column if not exists first_known_at timestamptz;
 
 create index if not exists migaku_words_language_status_active_idx
   on public.migaku_words (language, status)
@@ -251,6 +259,8 @@ def build_record(word: Any, *, include_meaning: bool, now_iso: str) -> dict[str,
     freq = getattr(word, "frequency_stars", None)
     if freq is not None:
         record["frequency"] = int(freq)
+    record["first_learning_at"] = getattr(word, "first_learning_at", None) or None
+    record["first_known_at"] = getattr(word, "first_known_at", None) or None
     example = getattr(word, "example", None)
     if example:
         record["example"] = example
@@ -287,5 +297,7 @@ def cache_row_from_supabase_record(record: dict[str, Any]) -> CachedRow | None:
         meaning=meaning,
         example=record.get("example") or None,
         frequency_stars=record.get("frequency"),
+        first_learning_at=record.get("first_learning_at") or None,
+        first_known_at=record.get("first_known_at") or None,
         sink_meaning_was_blank=not meaning,
     )

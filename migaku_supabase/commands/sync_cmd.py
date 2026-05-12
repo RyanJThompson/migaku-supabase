@@ -76,6 +76,8 @@ def _cache_row_from_word(
         meaning=word.meaning or None,
         example=word.example or None,
         frequency_stars=word.frequency_stars,
+        first_learning_at=word.first_learning_at or None,
+        first_known_at=word.first_known_at or None,
         sink_meaning_was_blank=sink_meaning_was_blank,
     )
 
@@ -103,6 +105,131 @@ def _merge_difficulty(words: list[Word], difficult: list[dict[str, Any]]) -> Non
             pos_list = match.get("parts_of_speech") or []
             if pos_list:
                 w.part_of_speech = ", ".join(sorted(set(pos_list)))
+
+
+def _epoch_to_iso(value: Any) -> str | None:
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    seconds = value / 1000 if value > 10_000_000_000 else value
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _earliest_iso(current: str | None, candidate: str | None) -> str | None:
+    if candidate is None:
+        return current
+    if current is None or candidate < current:
+        return candidate
+    return current
+
+
+def _status_event_time(row: dict[str, Any]) -> str | None:
+    # Prefer the server-accepted timestamp; fall back to the client event time.
+    return _epoch_to_iso(row.get("serverMod")) or _epoch_to_iso(row.get("mod"))
+
+
+def _status_milestones_from_payload(
+    payload: dict[str, Any],
+) -> tuple[
+    dict[tuple[str, str, str, str], dict[str, str | None]],
+    dict[tuple[str, str, str], dict[str, str | None]],
+    dict[tuple[str, str, str, str], dict[str, str | None]],
+    dict[tuple[str, str, str], dict[str, str | None]],
+]:
+    """Extract status milestone timestamps from Migaku's raw payload.
+
+    `wordHistory` is the clean source for "first became LEARNING/KNOWN".
+    The current `words[]` rows are kept as a conservative fallback for
+    accounts/history gaps where Migaku exposes the current state but not the
+    matching history event.
+    """
+    exact: dict[tuple[str, str, str, str], dict[str, str | None]] = {}
+    loose: dict[tuple[str, str, str], dict[str, str | None]] = {}
+    for row in payload.get("wordHistory") or []:
+        if not isinstance(row, dict) or row.get("del"):
+            continue
+        status = (row.get("knownStatus") or "").upper()
+        if status not in {"LEARNING", "KNOWN"}:
+            continue
+        timestamp = _status_event_time(row)
+        if timestamp is None:
+            continue
+
+        lang = row.get("language") or ""
+        dict_form = row.get("dictForm") or ""
+        secondary = row.get("secondary") or ""
+        part_of_speech = row.get("partOfSpeech") or ""
+        exact_key = (lang, dict_form, secondary, part_of_speech)
+        loose_key = (lang, dict_form, secondary)
+        field = "first_learning_at" if status == "LEARNING" else "first_known_at"
+
+        exact_bucket = exact.setdefault(exact_key, {
+            "first_learning_at": None,
+            "first_known_at": None,
+        })
+        exact_bucket[field] = _earliest_iso(exact_bucket[field], timestamp)
+
+        loose_bucket = loose.setdefault(loose_key, {
+            "first_learning_at": None,
+            "first_known_at": None,
+        })
+        loose_bucket[field] = _earliest_iso(loose_bucket[field], timestamp)
+
+    fallback_exact: dict[tuple[str, str, str, str], dict[str, str | None]] = {}
+    fallback_loose: dict[tuple[str, str, str], dict[str, str | None]] = {}
+    for row in payload.get("words") or []:
+        if not isinstance(row, dict) or row.get("del"):
+            continue
+        status = (row.get("knownStatus") or "").upper()
+        if status not in {"LEARNING", "KNOWN"}:
+            continue
+        timestamp = (
+            _epoch_to_iso(row.get("serverMod"))
+            or _epoch_to_iso(row.get("mod"))
+            or _epoch_to_iso(row.get("created"))
+        )
+        if timestamp is None:
+            continue
+
+        lang = row.get("language") or ""
+        dict_form = row.get("dictForm") or ""
+        secondary = row.get("secondary") or ""
+        part_of_speech = row.get("partOfSpeech") or ""
+        exact_key = (lang, dict_form, secondary, part_of_speech)
+        loose_key = (lang, dict_form, secondary)
+        field = "first_learning_at" if status == "LEARNING" else "first_known_at"
+
+        exact_bucket = fallback_exact.setdefault(exact_key, {
+            "first_learning_at": None,
+            "first_known_at": None,
+        })
+        exact_bucket[field] = _earliest_iso(exact_bucket[field], timestamp)
+
+        loose_bucket = fallback_loose.setdefault(loose_key, {
+            "first_learning_at": None,
+            "first_known_at": None,
+        })
+        loose_bucket[field] = _earliest_iso(loose_bucket[field], timestamp)
+
+    return exact, loose, fallback_exact, fallback_loose
+
+
+def _apply_status_milestones(words: list[Word], payload: dict[str, Any]) -> None:
+    exact, loose, fallback_exact, fallback_loose = _status_milestones_from_payload(payload)
+    for word in words:
+        exact_key = (
+            word.language,
+            word.dict_form,
+            word.secondary,
+            word.part_of_speech or "",
+        )
+        loose_key = (word.language, word.dict_form, word.secondary)
+        primary = exact.get(exact_key) or loose.get(loose_key) or {}
+        fallback = fallback_exact.get(exact_key) or fallback_loose.get(loose_key) or {}
+        word.first_learning_at = primary.get("first_learning_at") or fallback.get("first_learning_at")
+        word.first_known_at = primary.get("first_known_at") or fallback.get("first_known_at")
 
 
 def _bootstrap_cache_from_supabase(
@@ -259,6 +386,8 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
         words = [w for w in words if (w.known_status or "").upper() in keep]
         log.info("After status filter (%s): %d words.", ",".join(statuses), len(words))
 
+    _apply_status_milestones(words, payload)
+
     # --- Difficulty (local aggregation) -------------------------------
     diff_limit = config.DEFAULT_DIFFICULT_LIMIT
     log.info("Computing fail-rate locally from /pull-sync (limit=%d) ...", diff_limit)
@@ -309,6 +438,11 @@ def run(args: argparse.Namespace) -> int:  # noqa: C901  (linear orchestration)
         cached = cache_rows.get(word.key)
         sink_cached = sink_rows.get(word.key) if supabase is not None else cached
         destination_missing = supabase is not None and word.key not in sink_rows
+
+        if word.first_learning_at is None and sink_cached is not None:
+            word.first_learning_at = sink_cached.first_learning_at
+        if word.first_known_at is None and sink_cached is not None:
+            word.first_known_at = sink_cached.first_known_at
 
         # Decide whether to include Meaning in this row's payload.
         # Cases (matches the pseudo-code in this module's docstring):

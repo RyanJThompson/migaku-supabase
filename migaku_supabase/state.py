@@ -12,10 +12,10 @@ v2 additions (forward-compatible — v1 tools will just ignore them):
     validation), `last_full_pull_at` (ISO timestamp of the most recent
     serverVersion=0 sweep), and `v2_first_sync_done` ("1"/"0"; gates
     the one-time auto-populate of blank Meanings).
-  - `meaning`, `example`, `frequency_stars`, `sink_meaning_was_blank`
-    columns on `words` (added via idempotent ALTER TABLE; v1 tools will
-    keep working since they just SELECT * over the columns they know
-    about).
+  - `meaning`, `example`, `frequency_stars`, status milestone timestamps,
+    and `sink_meaning_was_blank` columns on `words` (added via idempotent
+    ALTER TABLE; v1 tools will keep working since they just SELECT * over the
+    columns they know about).
 
 Atomicity rule: every destination API call is paired with a
 single `cache.upsert(row)` inside its own transaction. A SIGKILL between
@@ -92,6 +92,7 @@ class StateCache:
         text_cols = (
             "pinyin_marks", "pinyin_numeric", "sense_index",
             "meaning", "example",                         # v2
+            "first_learning_at", "first_known_at",
         )
         for col in text_cols:
             if col not in cols:
@@ -142,6 +143,12 @@ class StateCache:
                 meaning=r["meaning"] if "meaning" in keys else None,
                 example=r["example"] if "example" in keys else None,
                 frequency_stars=(r["frequency_stars"] if "frequency_stars" in keys else None),
+                first_learning_at=(
+                    r["first_learning_at"] if "first_learning_at" in keys else None
+                ),
+                first_known_at=(
+                    r["first_known_at"] if "first_known_at" in keys else None
+                ),
                 sink_meaning_was_blank=(
                     bool(r["sink_meaning_was_blank"])
                     if "sink_meaning_was_blank" in keys else True
@@ -158,8 +165,9 @@ class StateCache:
                                    part_of_speech, last_synced, archived,
                                    pinyin_marks, pinyin_numeric, sense_index,
                                    meaning, example, frequency_stars,
+                                   first_learning_at, first_known_at,
                                    sink_meaning_was_blank)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(migaku_key) DO UPDATE SET
                     page_id                  = excluded.page_id,
                     lang                     = excluded.lang,
@@ -178,6 +186,8 @@ class StateCache:
                     meaning                  = excluded.meaning,
                     example                  = excluded.example,
                     frequency_stars          = excluded.frequency_stars,
+                    first_learning_at        = excluded.first_learning_at,
+                    first_known_at           = excluded.first_known_at,
                     sink_meaning_was_blank   = excluded.sink_meaning_was_blank
                 """,
                 (row.migaku_key, row.page_id, row.lang, row.dict_form, row.secondary,
@@ -185,6 +195,7 @@ class StateCache:
                  row.part_of_speech, row.last_synced, 1 if row.archived else 0,
                  row.pinyin_marks, row.pinyin_numeric, row.sense_index,
                  row.meaning, row.example, row.frequency_stars,
+                 row.first_learning_at, row.first_known_at,
                  1 if row.sink_meaning_was_blank else 0),
             )
 
@@ -290,7 +301,7 @@ def has_tracked_changes(word: Any, cached: CachedRow) -> bool:
         known_status, fail_rate, total_reviews, failed_reviews,
         part_of_speech, pinyin_marks, pinyin_numeric, sense_index
       v2 additions:
-        meaning, example, frequency_stars
+        meaning, example, frequency_stars, first_learning_at, first_known_at
 
     `Meaning` is special: see `is_v2_first_sync_done` and the sync
     flow notes. We DO compare it here, but the sync flow is responsible
@@ -317,12 +328,16 @@ def has_tracked_changes(word: Any, cached: CachedRow) -> bool:
     if (word.pinyin_numeric or None) != cached.pinyin_numeric:
         return True
     word_sense = word.secondary if word.language == "zh" else None
-    if (word_sense or None) != cached.sense_index:
+    if (word_sense or None) != (cached.sense_index or None):
         return True
     if (getattr(word, "meaning", None) or None) != cached.meaning:
         return True
     if (getattr(word, "example", None) or None) != cached.example:
         return True
     if getattr(word, "frequency_stars", None) != cached.frequency_stars:
+        return True
+    if (getattr(word, "first_learning_at", None) or None) != cached.first_learning_at:
+        return True
+    if (getattr(word, "first_known_at", None) or None) != cached.first_known_at:
         return True
     return False
